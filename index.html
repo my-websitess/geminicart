@@ -142,9 +142,9 @@
   .lightbox-nav{ position:absolute; top:50%; transform:translateY(-50%); z-index:5; background:rgba(255,255,255,0.12); border:none; color:#fff; width:42px; height:42px; border-radius:50%; font-size:22px; cursor:pointer; display:flex; align-items:center; justify-content:center; }
   .lightbox-prev{ left:10px; } .lightbox-next{ right:10px; }
   .lightbox-counter{ position:absolute; top:18px; left:16px; z-index:5; color:rgba(255,255,255,0.75); font-family:'Manrope',sans-serif; font-size:12.5px; }
-  .lightbox-stage{ flex:1; display:flex; align-items:center; justify-content:center; overflow:hidden; touch-action:pan-y; }
-  .lightbox-stage img{ max-width:92%; max-height:78vh; object-fit:contain; transition:transform .25s ease; }
-  .lightbox-stage img.zoomed{ transform:scale(2.2); }
+  .lightbox-stage{ flex:1; display:flex; align-items:center; justify-content:center; overflow:hidden; touch-action:none; }
+  .lightbox-stage img{ max-width:92%; max-height:78vh; object-fit:contain; transition:transform .25s ease; transform-origin:center center; }
+  .lightbox-stage img.zoomed{ cursor:grab; }
   .lightbox-hint{ text-align:center; color:rgba(255,255,255,0.4); font-size:11px; margin-top:6px; }
   .lightbox-info{ padding:12px 20px 26px; text-align:center; color:#fff; }
   .lightbox-cat{ font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--blush); margin-bottom:4px; }
@@ -395,10 +395,12 @@
   }
   window.decrementQty = decrementQty;
 
-  // ---------- Fullscreen image viewer: swipe between photos, double-tap to zoom ----------
+  // ---------- Fullscreen image viewer: swipe between photos, tap any spot to zoom + drag to pan ----------
   let lightboxList = [];
   let lightboxIndex = 0;
   let lightboxZoomed = false;
+  let lbScale = 1, lbTx = 0, lbTy = 0, lbNaturalRect = null;
+  const LB_ZOOM = 2.4;
 
   function openLightbox(id){
     lightboxList = getFiltered();
@@ -411,14 +413,57 @@
 
   function closeLightbox(){
     document.getElementById('lightboxOverlay').classList.remove('show');
+    resetLightboxZoom();
+  }
+
+  function resetLightboxZoom(){
+    lbScale = 1; lbTx = 0; lbTy = 0; lightboxZoomed = false;
+    const img = document.getElementById('lightboxImg');
+    img.style.transition = 'transform .25s ease';
+    img.style.transform = '';
+    img.classList.remove('zoomed');
+  }
+
+  function applyLightboxTransform(){
+    document.getElementById('lightboxImg').style.transform = `translate(${lbTx}px, ${lbTy}px) scale(${lbScale})`;
+  }
+
+  // Keeps the photo from being dragged past its own edges
+  function clampLightboxPan(){
+    if(!lbNaturalRect) return;
+    const stageRect = document.getElementById('lightboxStage').getBoundingClientRect();
+    const maxX = Math.max(0, (lbNaturalRect.width * lbScale - stageRect.width) / 2);
+    const maxY = Math.max(0, (lbNaturalRect.height * lbScale - stageRect.height) / 2);
+    lbTx = Math.min(maxX, Math.max(-maxX, lbTx));
+    lbTy = Math.min(maxY, Math.max(-maxY, lbTy));
+  }
+
+  // Zooms in centered exactly on the tapped point — any corner, not just the middle
+  function zoomLightboxAt(clientX, clientY){
+    const img = document.getElementById('lightboxImg');
+    lbNaturalRect = img.getBoundingClientRect(); // measured at scale 1, before zooming
+    const cx = lbNaturalRect.left + lbNaturalRect.width / 2;
+    const cy = lbNaturalRect.top + lbNaturalRect.height / 2;
+    lbScale = LB_ZOOM;
+    lbTx = -lbScale * (clientX - cx);
+    lbTy = -lbScale * (clientY - cy);
+    clampLightboxPan();
+    img.style.transition = 'transform .25s ease';
+    applyLightboxTransform();
+    lightboxZoomed = true;
+    img.classList.add('zoomed');
+  }
+
+  function toggleLightboxZoom(clientX, clientY){
+    if(lightboxZoomed) resetLightboxZoom();
+    else zoomLightboxAt(clientX, clientY);
   }
 
   function renderLightbox(){
     const p = lightboxList[lightboxIndex];
     if(!p) return;
-    lightboxZoomed = false;
+    resetLightboxZoom();
     const img = document.getElementById('lightboxImg');
-    img.classList.remove('zoomed');
     img.src = p.image || '';
     img.style.display = p.image ? 'block' : 'none';
     document.getElementById('lightboxCounter').textContent = `${lightboxIndex+1} / ${lightboxList.length}`;
@@ -449,28 +494,56 @@
     if(e.key === 'ArrowRight') lightboxNext();
   });
 
-  // Touch: swipe left/right to move between photos, double-tap to zoom in/out
+  // Touch: swipe = prev/next photo (only when not zoomed). Tap-tap = zoom to that
+  // exact spot. Drag while zoomed = pan around to see any corner of the photo.
   (function(){
     const stage = document.getElementById('lightboxStage');
+    const img = document.getElementById('lightboxImg');
     let startX = 0, startY = 0, lastTap = 0;
+    let dragging = false, dragStartTx = 0, dragStartTy = 0;
+
     stage.addEventListener('touchstart', e=>{
       startX = e.touches[0].clientX; startY = e.touches[0].clientY;
-    });
+      if(lightboxZoomed){
+        dragging = true;
+        dragStartTx = lbTx; dragStartTy = lbTy;
+        img.style.transition = 'none';
+      }
+    }, { passive: true });
+
+    stage.addEventListener('touchmove', e=>{
+      if(!dragging || !lightboxZoomed) return;
+      e.preventDefault();
+      lbTx = dragStartTx + (e.touches[0].clientX - startX);
+      lbTy = dragStartTy + (e.touches[0].clientY - startY);
+      clampLightboxPan();
+      applyLightboxTransform();
+    }, { passive: false });
+
     stage.addEventListener('touchend', e=>{
       const dx = e.changedTouches[0].clientX - startX;
       const dy = e.changedTouches[0].clientY - startY;
-      if(!lightboxZoomed && Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)){
+      const moved = Math.abs(dx) > 10 || Math.abs(dy) > 10;
+      dragging = false;
+      img.style.transition = 'transform .25s ease';
+
+      if(!lightboxZoomed && moved && Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)){
         if(dx > 0) lightboxPrev(); else lightboxNext();
         return;
       }
-      const now = Date.now();
-      if(now - lastTap < 300){
-        lightboxZoomed = !lightboxZoomed;
-        document.getElementById('lightboxImg').classList.toggle('zoomed', lightboxZoomed);
+      if(!moved || lightboxZoomed){
+        const now = Date.now();
+        if(now - lastTap < 300){
+          toggleLightboxZoom(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+        }
+        lastTap = now;
       }
-      lastTap = now;
     });
+
+    // Desktop bonus: double-click to zoom to that spot too
+    stage.addEventListener('dblclick', e=>{ toggleLightboxZoom(e.clientX, e.clientY); });
   })();
+
 
   function cartTotals(){
     let totalItems = 0, totalPrice = 0;
